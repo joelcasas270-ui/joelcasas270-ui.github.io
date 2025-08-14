@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover" />
+  <title>Escáner de Colores (móvil) - CORREGIDO</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--accent:#06b6d4;--text:#e6eef6}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{background:linear-gradient(180deg,#051225 0%,#071731 100%);color:var(--text);display:flex;align-items:stretch;justify-content:center}
+    .app{width:100%;max-width:900px;height:100vh;display:flex;flex-direction:column;padding:12px;box-sizing:border-box}
+    header{display:flex;align-items:center;gap:12px;padding:8px}
+    h1{font-size:16px;margin:0}
+    .camera-wrap{position:relative;flex:1;border-radius:14px;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center}
+    video#video{width:100%;height:100%;object-fit:cover}
+    .overlay{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;display:flex;align-items:center;justify-content:center}
+    .crosshair{width:48px;height:48px;border-radius:999px;border:3px solid rgba(255,255,255,0.85);box-shadow:0 6px 18px rgba(0,0,0,0.7)}
+    .controls{display:flex;gap:8px;padding:10px;margin-top:8px;align-items:center;justify-content:space-between}
+    .left,.right{display:flex;gap:8px;align-items:center}
+    button{background:var(--accent);border:none;color:#042028;padding:10px 12px;border-radius:10px;font-weight:600}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.08);color:var(--text)}
+    .swatch{display:flex;align-items:center;gap:12px;padding:12px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px}
+    .color-box{width:56px;height:56px;border-radius:10px;border:1px solid rgba(255,255,255,0.06)}
+    .info{display:flex;flex-direction:column}
+    .info small{opacity:0.9}
+    .footer{padding:8px;font-size:13px;opacity:0.9}
+    .status{padding:8px;border-radius:10px;background:#07182a;font-size:13px}
+    .hidden{display:none}
+    input[type="color"]{height:36px;width:56px;border-radius:8px;border:none;padding:0}
+    input[type=file]{display:none}
+    label.file-btn{background:transparent;border:1px dashed rgba(255,255,255,0.08);padding:8px;border-radius:8px;font-size:13px}
+    @media (max-width:520px){.crosshair{width:40px;height:40px;border-width:2px}.color-box{width:48px;height:48px}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Escáner de Colores — Móvil</h1>
+    </header>
+
+    <div class="camera-wrap" id="cameraWrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="sample" style="display:none"></canvas>
+      <div class="overlay"><div class="crosshair" aria-hidden></div></div>
+      <div class="status" id="statusBanner" style="position:absolute;left:12px;top:12px;right:12px;display:block;">Presiona <strong>Iniciar cámara</strong> para permitir el uso de la cámara.</div>
+    </div>
+
+    <div class="controls">
+      <div class="left">
+        <button id="btn-start">Iniciar cámara</button>
+        <button id="btn-stop" class="secondary">Detener cámara</button>
+        <button id="btn-toggle" class="secondary">Modo continuo: off</button>
+        <button id="btn-switch" class="secondary">Cambiar cámara</button>
+      </div>
+
+      <div class="right swatch">
+        <div class="color-box" id="colorBox" style="background:#333"></div>
+        <div class="info">
+          <!-- ahora mostramos el nombre EN en pantalla, pero hablaremos en español -->
+          <div id="name">-</div>
+          <small id="hex">HEX: -</small>
+          <small id="rgb">RGB: -</small>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+      <label class="file-btn" for="upload">Subir imagen (probar sin cámara)</label>
+      <input id="upload" type="file" accept="image/*">
+      <input id="simColor" type="color" title="Simular color">
+      <button id="btn-sim" class="secondary">Usar simulación</button>
+    </div>
+
+    <div class="footer">
+      
+    </div>
+  </div>
+
+  <script>
+    // Referencias DOM
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('sample');
+    const ctx = canvas.getContext('2d');
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
+    const btnToggle = document.getElementById('btn-toggle');
+    const btnSwitch = document.getElementById('btn-switch');
+    const colorBox = document.getElementById('colorBox');
+    const nameEl = document.getElementById('name');
+    const hexEl = document.getElementById('hex');
+    const rgbEl = document.getElementById('rgb');
+    const statusBanner = document.getElementById('statusBanner');
+    const upload = document.getElementById('upload');
+    const simColor = document.getElementById('simColor');
+    const btnSim = document.getElementById('btn-sim');
+
+    let stream = null; // MediaStream
+    let continuous = false; let continuousTimer = null;
+    let preferRear = true; // prefer rear camera initial
+
+    // ------ UTILIDADES DE COLOR (igual que antes pero con muestreo 3x3) ------
+    const COLOR_LIST = [
+      {name:'llana', en:'Yana', hex:'#000000'}, {name:'yuraj', en:'Yuraq', hex:'#ffffff'}, {name:'puka', en:'puca', hex:'#ff0000'},
+      {name:'Comer', en:'Qumir', hex:'#00ff00'}, {name:'ancas', en:'Anqas', hex:'#0000ff'}, {name:'kellu', en:'Qillu', hex:'#ffff00'},
+      {name:'willapu', en:'Willapu', hex:'#ff7f00'}, {name:'mullu', en:'Mullu', hex:'#ff1493'}, {name:'kulli', en:'Kulli', hex:'#800080'},
+      {name:'paqo', en:'Paqu', hex:'#8b4513'}, {name:'Oque', en:'Uqi', hex:'#808080'}, {name:'laqu', en:'Laqhu', hex:'#00ffff'},
+      {name:'magenta', en:'magenta', hex:'#ff00ff'}, {name:'corirara', en:'Qurirara', hex:'#f5f5dc'}, {name:'Lacocomer', en:'Laqhu qumir', hex:'#808000'},
+      {name:'turquesa', en:'turquoise', hex:'#40e0d0'}, {name:'Pillku', en:'Pillku', hex:'#722f37'}, {name:'Lacocomer', en:'Laqhu qumir', hex:'#bfff00'}
+    ];
+
+    function hexToRgb(hex){ const h = hex.replace('#',''); return {r:parseInt(h.substring(0,2),16), g:parseInt(h.substring(2,4),16), b:parseInt(h.substring(4,6),16)}; }
+    function rgbToLab(r,g,b){ r/=255; g/=255; b/=255; r = r>0.04045 ? Math.pow((r+0.055)/1.055,2.4) : r/12.92; g = g>0.04045 ? Math.pow((g+0.055)/1.055,2.4) : g/12.92; b = b>0.04045 ? Math.pow((b+0.055)/1.055,2.4) : b/12.92; let x = (r*0.4124 + g*0.3576 + b*0.1805) / 0.95047; let y = (r*0.2126 + g*0.7152 + b*0.0722) / 1.00000; let z = (r*0.0193 + g*0.1192 + b*0.9505) / 1.08883; x = x>0.008856 ? Math.pow(x,1/3) : (7.787*x) + 16/116; y = y>0.008856 ? Math.pow(y,1/3) : (7.787*y) + 16/116; z = z>0.008856 ? Math.pow(z,1/3) : (7.787*z) + 16/116; return {L: (116*y) - 16, a:500*(x-y), b:200*(y-z)}; }
+    function deltaE(lab1, lab2){ const dl = lab1.L - lab2.L; const da = lab1.a - lab2.a; const db = lab1.b - lab2.b; return Math.sqrt(dl*dl + da*da + db*db); }
+    function rgbToHex(r,g,b){ return '#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join(''); }
+    function nearestColorName(r,g,b){ const lab = rgbToLab(r,g,b); let min = Infinity; let best = null; for(const c of COLOR_LIST){ const rgb = hexToRgb(c.hex); const labc = rgbToLab(rgb.r, rgb.g, rgb.b); const d = deltaE(lab, labc); if(d < min){ min = d; best = c; } } return {name:best.name, en:best.en, hex:best.hex, distance:min}; }
+
+    function speak(text){ if(!('speechSynthesis' in window)) return; const msg = new SpeechSynthesisUtterance(text); msg.lang = 'es-ES'; speechSynthesis.cancel(); speechSynthesis.speak(msg); }
+
+    // ------ MUESTREO: promedio de un área 5x5 en el centro para estabilidad ------
+    function sampleCenterAverage(){
+      if(video.readyState < 2) return null;
+      const w = video.videoWidth, h = video.videoHeight;
+      if(!w || !h) return null;
+      // usar un canvas pequeño para acelerar
+      const smallW = 200; const smallH = Math.round((h/w) * smallW);
+      canvas.width = smallW; canvas.height = smallH;
+      // dibujar video escalado
+      ctx.drawImage(video, 0, 0, smallW, smallH);
+      const cx = Math.floor(smallW/2), cy = Math.floor(smallH/2);
+      const area = 3; // 3x3
+      let r=0,g=0,b=0,count=0;
+      for(let dx=-area; dx<=area; dx++){
+        for(let dy=-area; dy<=area; dy++){
+          const x = cx+dx, y = cy+dy;
+          if(x<0 || y<0 || x>=smallW || y>=smallH) continue;
+          const d = ctx.getImageData(x,y,1,1).data;
+          r += d[0]; g += d[1]; b += d[2]; count++;
+        }
+      }
+      if(count===0) return null;
+      return {r: Math.round(r/count), g: Math.round(g/count), b: Math.round(b/count)};
+    }
+
+    function updateUI(r,g,b){
+      const nearest = nearestColorName(r,g,b);
+      const h = rgbToHex(r,g,b);
+      colorBox.style.background = h;
+      // Mostramos el nombre en inglés en pantalla
+      nameEl.textContent = nearest.en + (nearest.distance > 25 ? ' (approx.)' : '');
+      hexEl.textContent = 'HEX: ' + h;
+      rgbEl.textContent = `RGB: ${r}, ${g}, ${b}`;
+      return nearest;
+    }
+
+    function doOneRead(){
+      const px = sampleCenterAverage();
+      if(!px) return;
+      const {r,g,b} = px;
+      const nearest = updateUI(r,g,b);
+      // Hablamos en español (nombre en español)
+      speak(nearest.name);
+    }
+
+    // ------ GESTIÓN DE CÁMARA (iniciar / detener / cambiar) ------
+    async function startCamera(){
+      // startCamera debe invocarse por interacción del usuario (click/tap)
+      const constraints = {
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: preferRear ? { ideal: 'environment' } : { ideal: 'user' }
+        },
+        audio: false
+      };
+
+      // Seguridad: comprobar contexto seguro
+      if(!window.isSecureContext){
+        showStatus('Advertencia: la cámara requiere HTTPS para funcionar en la mayoría de navegadores. Si pruebas desde "file://" o HTTP, es posible que el acceso sea bloqueado.');
+      }
+
+      try{
+        stopCamera();
+        showStatus('Solicitando permiso de la cámara...');
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await video.play();
+        showStatus('Cámara activada. Apunta el centro al objeto y pulsa "Leer" o activa modo continuo.');
+
+        // intentar detectar facingMode desde la pista
+        try{
+          const [track] = stream.getVideoTracks();
+          const settings = track.getSettings();
+          // aplicar espejo solo si es front (user)
+          if(settings.facingMode === 'user'){
+            video.style.transform = 'scaleX(-1)';
+          }else{
+            video.style.transform = '';
+          }
+        }catch(e){
+          video.style.transform = '';
+        }
+
+      }catch(err){
+        handleGetUserMediaError(err);
+      }
+    }
+
+    function stopCamera(){
+      if(stream){
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+        video.srcObject = null;
+      }
+      clearInterval(continuousTimer);
+      continuousTimer = null;
+      continuous = false;
+      btnToggle.textContent = 'Modo continuo: off';
+      showStatus('Cámara detenida.');
+    }
+
+    async function switchCamera(){
+      // cambia preferRear y reinicia la cámara
+      preferRear = !preferRear;
+      showStatus('Cambiando cámara...');
+      await startCamera();
+    }
+
+    // ------ Manejo de errores con mensajes útiles ------
+    function handleGetUserMediaError(err){
+      console.error('getUserMedia error:', err);
+      if(!err || !err.name){
+        showStatus('Error desconocido al acceder a la cámara. Revisa la consola para más detalles.');
+        return;
+      }
+      switch(err.name){
+        case 'NotAllowedError':
+        case 'PermissionDeniedError':
+          showStatus('Permiso denegado: No se permitió el acceso a la cámara. Comprueba que concediste permiso al sitio. Si ya lo negaste, ve a la configuración del navegador y habilita la cámara para este sitio. (HTTPS requerido).');
+          showPermissionHelp();
+          break;
+        case 'NotFoundError':
+        case 'DevicesNotFoundError':
+          showStatus('No se encontró una cámara en el dispositivo. Asegúrate de que existe una cámara disponible.');
+          break;
+        case 'NotReadableError':
+        case 'TrackStartError':
+          showStatus('La cámara está en uso por otra aplicación o no puede iniciarse. Cierra otras apps que la usen e intenta de nuevo.');
+          break;
+        case 'OverconstrainedError':
+        case 'ConstraintNotSatisfiedError':
+          showStatus('Configuración de cámara no compatible (resolución/facingMode). Intentando con configuración básica...');
+          // intentar con configuración básica
+          preferRear = false;
+          startCamera();
+          break;
+        default:
+          showStatus('Error al acceder a la cámara: ' + err.name + '. Revisa la consola para más información.');
+      }
+    }
+
+    function showStatus(msg){ statusBanner.textContent = msg; }
+
+    function showPermissionHelp(){
+      // Mensaje amigable paso a paso para NotAllowedError
+      const msg = `Si denegaste el permiso, haz lo siguiente:\n\n1) Asegúrate de abrir la página a través de HTTPS (o usa un servidor local como 'http-server' con HTTPS).\n2) Revisa la configuración del sitio en tu navegador: (Chrome) Menú → Configuración → Privacidad y seguridad → Configuración del sitio → Cámara → busca este sitio y permite la cámara.\n3) En iOS (Safari) ve a Ajustes → Safari → Cámara y concede permiso, o abre Ajustes → tu navegador → Permisos.\n4) Vuelve a pulsar "Iniciar cámara" después de cambiar la configuración.\n`;
+      // mostrar en banner y consola
+      showStatus('Permiso denegado. Revisa la configuración del navegador. Ver consola para pasos detallados.');
+      console.info(msg);
+      alert('Permiso denegado para la cámara. Abre la consola o sigue las instrucciones del banner para permitir el acceso.');
+    }
+
+    // ------ Eventos UI ------
+    btnStart.addEventListener('click', async ()=>{ await startCamera(); });
+    btnStop.addEventListener('click', ()=>{ stopCamera(); });
+    btnSwitch.addEventListener('click', async ()=>{ await switchCamera(); });
+
+    btnToggle.addEventListener('click', ()=>{
+      continuous = !continuous;
+      btnToggle.textContent = 'Modo continuo: ' + (continuous ? 'on' : 'off');
+      if(continuous){
+        // leer inmediatamente y luego cada 900ms
+        doOneRead();
+        continuousTimer = setInterval(()=>{ doOneRead(); }, 900);
+      }else{
+        clearInterval(continuousTimer);
+        continuousTimer = null;
+      }
+    });
+
+    // subida de imágenes para probar sin cámara
+    upload.addEventListener('change', (ev)=>{
+      const f = ev.target.files && ev.target.files[0];
+      if(!f) return;
+      const img = new Image();
+      const url = URL.createObjectURL(f);
+      img.onload = ()=>{
+        // dibujar imagen en canvas y muestrear centro
+        const w = 300; const h = Math.round((img.height/img.width)*w);
+        canvas.width = w; canvas.height = h;
+        ctx.drawImage(img, 0, 0, w, h);
+        const cx = Math.floor(w/2), cy = Math.floor(h/2);
+        const d = ctx.getImageData(cx, cy, 1, 1).data;
+        const r = d[0], g = d[1], b = d[2];
+        const nearest = updateUI(r,g,b);
+        // speak en español
+        speak(nearest.name);
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    });
+
+    // simulación con selector de color (prueba sin cámara)
+    btnSim.addEventListener('click', ()=>{
+      const hex = simColor.value || '#808080';
+      const rgb = hexToRgb(hex);
+      const nearest = updateUI(rgb.r, rgb.g, rgb.b);
+      speak(nearest.name);
+    });
+
+    // accesibilidad: tocar el área para leer el color (si la cámara está activa)
+    document.getElementById('cameraWrap').addEventListener('click', ()=>{ doOneRead(); });
+
+    // cerrar el stream al abandonar la página
+    window.addEventListener('pagehide', stopCamera);
+    window.addEventListener('beforeunload', stopCamera);
+
+    // Mostrar estado de permisos si la API Permissions está disponible
+    async function showPermissionsStatus(){
+      if(!navigator.permissions) return;
+      try{
+        // Algunos navegadores no soportan 'camera', intentar 'camera' y 'microphone' no siempre está disponible
+        const p = await navigator.permissions.query({name:'camera'}).catch(()=>null);
+        if(p) console.info('Permission camera state:', p.state);
+      }catch(e){ /* ignorar */ }
+    }
+    showPermissionsStatus();
+
+    // Nota: La causa más común de NotAllowedError es que el usuario negó el permiso o la página no es HTTPS.
+    // Cambios claves realizados: 1) No iniciamos la cámara automáticamente (evita prompts inesperados). 2) Mensajes claros para NotAllowedError. 3) Botón para simular color y probar sin cámara.
+
+  </script>
+</body>
+</html>
